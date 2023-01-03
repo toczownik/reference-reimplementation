@@ -6,7 +6,6 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include "genicam_wrapper.h"
-#include "GenTL/GenTL.h"
 
 #define DEFAULT_DEVICE_INDEX 0
 #define DEFAULT_STREAM_INDEX 0
@@ -76,6 +75,80 @@ void usage()
     exit(-1);
 }
 
+int set_node(const std::string& pNodeName, const std::shared_ptr<GenApi::CNodeMapRef>& pNodeMap, const std::string& pNodeValue){
+    GenApi::CNodePtr node;
+    try{
+        node = pNodeMap->_GetNode(pNodeName.c_str());
+    }
+    catch (GENICAM_NAMESPACE::AccessException& e){
+        std::cout << e.what();
+        return -1;
+    }
+    GENAPI_NAMESPACE::EInterfaceType type;
+    try{
+        type = node->GetPrincipalInterfaceType();
+    }
+    catch(GENICAM_NAMESPACE::LogicalErrorException& e ){
+        std::cout << e.what() <<std::endl;
+        return -1;
+    }
+    try{
+        switch(type){
+            case GENAPI_NAMESPACE::intfIInteger: {
+                auto intNode = (GENAPI_NAMESPACE::CIntegerPtr) node;
+                intNode->SetValue(std::stoll(pNodeValue));
+            }
+                break;
+            case GENAPI_NAMESPACE::intfIBoolean: {
+                auto boolNode = (GENAPI_NAMESPACE::CBooleanPtr) node;
+                boolNode->SetValue(std::stoi(pNodeValue));
+            }
+                break;
+            case GENAPI_NAMESPACE::intfIEnumeration: {
+                auto enumNode = (GENAPI_NAMESPACE::CEnumerationPtr) node;
+                enumNode->FromString(pNodeValue.c_str());
+            }
+                break;
+            case GENAPI_NAMESPACE::intfIFloat: {
+                auto floatNode = (GENAPI_NAMESPACE::CFloatPtr) node;
+                floatNode->SetValue(std::stof(pNodeValue));
+            }
+                break;
+            case GENAPI_NAMESPACE::intfIString: {
+                auto stringNode = (GENAPI_NAMESPACE::CStringPtr) node;
+                stringNode->SetValue(pNodeValue.c_str());
+            }
+                break;
+            case GENAPI_NAMESPACE::intfICommand: {
+                auto commandNode = (GENAPI_NAMESPACE::CCommandPtr) node;
+                commandNode->Execute();
+            }
+                break;
+            default:
+                std::cout << "Not supported node type" << std::endl;
+                return -1;
+        }
+    }
+    catch (GENICAM_NAMESPACE::AccessException& e){
+        std::cout << e.what()<<std::endl;
+        return -1;
+    }
+    catch (GENICAM_NAMESPACE::OutOfRangeException& e){
+        std::cout << e.what() <<std::endl;
+        return -1;
+    }
+    catch(GENICAM_NAMESPACE::InvalidArgumentException& e){
+        std::cout << e.what() <<std::endl;
+        return -1;
+    }
+    catch(GenTLException &e){
+        std::cout << e.what() <<std::endl;
+        return -1;
+    }
+    std::cout << "Node: " << pNodeName <<" set to value: " << pNodeValue << std::endl;
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     int option;
     int selectedOptions = 0;
@@ -83,7 +156,7 @@ int main(int argc, char *argv[]) {
     std::string pathToStoreImagesAt;
     bool imageGeneratorEnabled = false;
     std::string genTLString;
-    GENICAM_NAMESPACE::gcstring interfaceString = "";
+    std::string interfaceString;
     GENICAM_NAMESPACE::gcstring deviceIDTemplateString = "";
     int frameGrabberXMLIndex = DEFAULT_FRAME_GRABBER_XML_INDEX;
     int deviceIndex = DEFAULT_DEVICE_INDEX;
@@ -136,7 +209,7 @@ int main(int argc, char *argv[]) {
                 genTLString = key.second.get_value<std::string>();
             }
             else if(name == "InterfaceName"){
-                interfaceString = key.second.get_value<std::string>().c_str();
+                interfaceString = key.second.get_value<std::string>();
             }
             else if(name == "frameGrabberXMLIndex"){
                 frameGrabberXMLIndex = key.second.get_value<int>();
@@ -161,19 +234,22 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    {
-        System* system = nullptr;
-        try {
-            system = new System(genTLString);
-        } catch (std::runtime_error& error) {
-            std::cout << error.what() << std::endl;
-            exit(-1);
+    System system(genTLString);
+    auto interface = system.getInterface(interfaceString);
+    auto frameGrabberNodeMap = interface.getFrameGrabberNodeMap(frameGrabberXMLIndex, imageGeneratorEnabled);
+    for (auto& section : *pt) {
+        if(section.first != "framegrabber_nodes") continue;
+        for (auto& key : section.second) {
+            // zmienić kolejność argumentów
+            set_node(key.first, frameGrabberNodeMap, key.second.get_value<std::string>());
+            std::cout << key.first << " " << key.second.get_value<std::string>() << std::endl;
         }
-        std::string id;
-        system->getInfo(GenTL::TL_INFO_ID, &id);
-        std::cout << id << std::endl;
-        std::vector<Interface> interfaces = system->getInterfaces();
-
     }
+    auto device = interface.getDevice(deviceIndex);
+    auto stream = device.getStream(streamIndex);
+    stream.getBuffers();
+    stream.startAcquisition();
+    stream.getFrame(pathToStoreImagesAt);
+    stream.stopAcquisition();
     return 0;
 }
