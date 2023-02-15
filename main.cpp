@@ -6,6 +6,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include "genicam_wrapper.h"
+#include "Image_displayer.h"
 
 #define DEFAULT_DEVICE_INDEX 0
 #define DEFAULT_STREAM_INDEX 0
@@ -149,6 +150,17 @@ int set_node(const std::string& pNodeName, const std::shared_ptr<GenApi::CNodeMa
     return 0;
 }
 
+void loadNodes(boost::property_tree::basic_ptree<std::basic_string<char>, std::basic_string<char>> pt, std::shared_ptr<GenApi::CNodeMapRef> nodeMap, std::string sectionName) {
+    for (auto& section : pt) {
+        if(section.first != sectionName) continue;
+        for (auto& key : section.second) {
+            // zmienić kolejność argumentów
+            set_node(key.first, nodeMap, key.second.get_value<std::string>());
+            std::cout << key.first << " " << key.second.get_value<std::string>() << std::endl;
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     int option;
     int selectedOptions = 0;
@@ -203,53 +215,68 @@ int main(int argc, char *argv[]) {
     }
     for (auto& section : *pt) {
         if (section.first != "general_settings") continue;
-        for (auto& key : section.second){
+        for (auto& key : section.second) {
             auto name = key.first;
-            if(name == "GenTL"){
+            if(name == "GenTL") {
                 genTLString = key.second.get_value<std::string>();
             }
-            else if(name == "InterfaceName"){
+            else if(name == "InterfaceName") {
                 interfaceString = key.second.get_value<std::string>();
             }
-            else if(name == "frameGrabberXMLIndex"){
+            else if(name == "frameGrabberXMLIndex") {
                 frameGrabberXMLIndex = key.second.get_value<int>();
             }
-            else if(name == "deviceIndex"){
+            else if(name == "deviceIndex") {
                 deviceIndex = key.second.get_value<int>();
             }
-            else if(name == "cameraXMLIndex"){
+            else if(name == "cameraXMLIndex") {
                 cameraXMLIndex = key.second.get_value<int>();
             }
-            else if(name == "streamIndex"){
+            else if(name == "streamIndex") {
                 streamIndex = key.second.get_value<int>();
             }
-            else if(name == "ImageGenerator"){
+            else if(name == "ImageGenerator") {
                 imageGeneratorEnabled = key.second.get_value<bool>();
             }
-            else if(name == "FramesToGrab"){
+            else if(name == "FramesToGrab") {
                 framesToGrab = key.second.get_value<int>();
             }
-            else if(name == "PathToStoreImagesAt"){
+            else if(name == "PathToStoreImagesAt") {
                 pathToStoreImagesAt = key.second.get_value<std::string>();
             }
         }
     }
     System system(genTLString);
     auto interface = system.getInterface(interfaceString);
-    auto frameGrabberNodeMap = interface.getFrameGrabberNodeMap(frameGrabberXMLIndex, imageGeneratorEnabled);
-    for (auto& section : *pt) {
-        if(section.first != "framegrabber_nodes") continue;
-        for (auto& key : section.second) {
-            // zmienić kolejność argumentów
-            set_node(key.first, frameGrabberNodeMap, key.second.get_value<std::string>());
-            std::cout << key.first << " " << key.second.get_value<std::string>() << std::endl;
-        }
-    }
+    auto frameGrabberNodeMap = interface.getFrameGrabberNodeMap(frameGrabberXMLIndex);
+    loadNodes(*pt, frameGrabberNodeMap, "initial_framegrabber_nodes");
+    loadNodes(*pt, frameGrabberNodeMap, "framegrabber_nodes");
     auto device = interface.getDevice(deviceIndex);
+    std::shared_ptr<GenApi::CNodeMapRef> cameraNodeMap;
+    if (!imageGeneratorEnabled) {
+        cameraNodeMap = device.getCameraNodeMap(cameraXMLIndex);
+        loadNodes(*pt, cameraNodeMap, "initial_camera_nodes");
+    }
     auto stream = device.getStream(streamIndex);
-    stream.getBuffers();
+    auto buffer = stream.getBuffer(stream.getBufferSize());
+    auto displayer = new Image_displayer();
+    Event filledBuffer = stream.registerEvent(GenTL::EVENT_NEW_BUFFER);
     stream.startAcquisition();
-    stream.getFrame(pathToStoreImagesAt);
+    for (int i = 0; i < framesToGrab; ++i) {
+        buffer.queue();
+        auto data = stream.getData(filledBuffer.getHandle());
+        stream.getFrame(data, buffer, pathToStoreImagesAt);
+        displayer->convert(buffer.getInfo<uint8_t *>(GenTL::BUFFER_INFO_BASE), buffer.getInfo<size_t>(GenTL::BUFFER_INFO_WIDTH),
+                buffer.getInfo<size_t>(GenTL::BUFFER_INFO_HEIGHT), buffer.getInfo<size_t>(GenTL::BUFFER_INFO_PIXELFORMAT));
+        displayer->resize_and_display(interfaceString);
+    }
+    delete displayer;
     stream.stopAcquisition();
+    if (!imageGeneratorEnabled) {
+        loadNodes(*pt, cameraNodeMap, "post_acquisition_camera_nodes");
+    }
+    stream.flush();
+    filledBuffer.flush();
+    buffer.revoke();
     return 0;
 }
